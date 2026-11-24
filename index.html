@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101820">
+<title>ChessLab Mobile</title>
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+:root{color-scheme:dark;--bg:#101820;--panel:#1b2833;--muted:#9fb0bd;--accent:#67d5b5;--light:#e8d8bd;--dark:#789477}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f4f7f8;font:15px system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:620px;margin:auto;padding:18px 14px 36px}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+h1{font-size:21px;margin:0;letter-spacing:.3px} .sub{color:var(--muted);font-size:12px}
+.panel{background:var(--panel);border:1px solid #30414d;border-radius:16px;padding:14px;margin:12px 0}
+.status{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:12px}
+#status{font-weight:650}#turn{color:var(--muted);font-size:12px}
+.board{display:grid;grid-template-columns:repeat(8,1fr);width:100%;aspect-ratio:1;border-radius:8px;overflow:hidden;box-shadow:0 10px 30px #0005}
+.square{border:0;border-radius:0;display:grid;place-items:center;padding:0;position:relative;font-size:clamp(27px,8vw,52px);line-height:1;cursor:pointer}
+.light{background:var(--light);color:#17212a}.dark{background:var(--dark);color:#17212a}
+.square.selected{outline:4px solid #f5d45e;outline-offset:-4px}
+.square.target:after{content:"";position:absolute;width:24%;height:24%;border-radius:50%;background:#203b2c88}
+.square.capture:after{content:"";position:absolute;inset:5%;border:4px solid #203b2c88;border-radius:50%}
+.piece{filter:drop-shadow(0 1px 1px #0006);z-index:1}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+button,.filelabel{background:#263844;color:#f4f7f8;border:1px solid #405663;border-radius:10px;padding:10px 13px;font:inherit;cursor:pointer}
+button.primary{background:var(--accent);color:#10221d;border-color:var(--accent);font-weight:700}
+button:disabled{opacity:.4;cursor:not-allowed}
+input,textarea{width:100%;background:#101a22;border:1px solid #405663;color:#fff;border-radius:10px;padding:11px;font:inherit}
+label{display:block;color:var(--muted);font-size:12px;margin:10px 0 6px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+#analysis{min-height:64px;line-height:1.5;color:#d9e5e9}
+#moves{color:#b8c9d0;line-height:1.8;overflow-wrap:anywhere}
+.small{font-size:12px;color:var(--muted);line-height:1.5}
+.pill{font-size:11px;color:#10221d;background:var(--accent);border-radius:30px;padding:4px 8px;font-weight:700}
+#engineState{color:var(--muted);font-size:12px}
+.promo{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+@media(min-width:520px){main{padding-top:26px}.square{font-size:54px}}
+</style>
+</head>
+<body>
+<main>
+<header><div><h1>ChessLab</h1><div class="sub">Mobile chess analysis & practice</div></div><span class="pill">STOCKFISH</span></header>
+<section class="panel">
+ <div class="status"><span id="status">White to move</span><span id="turn">Move 1</span></div>
+ <div id="board" class="board" aria-label="Chess board"></div>
+ <div class="controls">
+  <button id="undo">Undo</button><button id="reset">New game</button><button id="flip">Flip board</button>
+ </div>
+</section>
+<section class="panel">
+ <div class="status"><strong>Engine analysis</strong><span id="engineState">Engine loading…</span></div>
+ <div id="analysis">Make a move, then tap Analyze to evaluate the position.</div>
+ <div class="controls"><button class="primary" id="analyze">Analyze position</button><button id="hint">Show best move</button></div>
+</section>
+<section class="panel">
+ <strong>Position tools</strong>
+ <label for="fen">Load a FEN position</label>
+ <input id="fen" placeholder="Paste FEN here">
+ <div class="controls"><button id="loadFen">Load FEN</button><button id="copyFen">Copy current FEN</button></div>
+ <label for="pgn">Move history (PGN)</label>
+ <textarea id="pgn" rows="3" placeholder="PGN appears here after moves…"></textarea>
+ <div class="controls"><button id="copyPgn">Copy PGN</button></div>
+</section>
+<section class="panel">
+ <strong>Move list</strong>
+ <div id="moves" class="small">No moves yet.</div>
+</section>
+<p class="small">For study and analysis. Use analysis only where permitted; this app does not hide activity or bypass chess-site fair-play systems. Engine analysis requires an internet connection to load Stockfish.</p>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script>
+(() => {
+ const game = new Chess();
+ const boardEl = document.getElementById('board');
+ const glyph = {w:{k:'♔',q:'♕',r:'♖',b:'♗',n:'♘',p:'♙'},b:{k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'}};
+ let selected=null, legal=[], flipped=false, engine=null, engineReady=false, lastBest=null;
+ const files='abcdefgh';
+ const sq=(f,r)=>files[f]+(8-r);
+ function render(){
+  boardEl.innerHTML='';
+  const b=game.board();
+  for(let vr=0;vr<8;vr++) for(let vf=0;vf<8;vf++){
+   const r=flipped?7-vr:vr, f=flipped?7-vf:vf, p=b[r][f], name=sq(f,r);
+   const el=document.createElement('button');
+   el.className='square '+((r+f)%2===0?'light':'dark');
+   if(selected===name)el.classList.add('selected');
+   const target=legal.find(m=>m.to===name);
+   if(target)el.classList.add(p?'capture':'target');
+   el.setAttribute('aria-label',name+(p?' '+p.color+' '+p.type:''));
+   if(p){const span=document.createElement('span');span.className='piece';span.textContent=glyph[p.color][p.type];el.appendChild(span)}
+   el.addEventListener('click',()=>tap(name));boardEl.appendChild(el);
+  }
+  const turn=game.turn()==='w'?'White':'Black';
+  document.getElementById('status').textContent=game.in_checkmate()?'Checkmate':game.in_draw()?'Draw':game.in_check()?turn+' is in check':turn+' to move';
+  document.getElementById('turn').textContent='Move '+game.move_number();
+  document.getElementById('undo').disabled=game.history().length===0;
+  document.getElementById('fen').value=game.fen();
+  document.getElementById('pgn').value=game.pgn();
+  const hist=game.history({verbose:true});
+  document.getElementById('moves').textContent=hist.length?hist.map((m,i)=>(i%2===0?Math.floor(i/2)+1+'. ':'')+m.san).join(' '):'No moves yet.';
+ }
+ function refreshLegal(){legal=selected?game.moves({square:selected,verbose:true}):[]}
+ function tap(square){
+  const piece=game.get(square);
+  if(selected){
+   const move=legal.find(m=>m.to===square);
+   if(move){
+    let promotion='q';
+    if(move.flags.includes('p')){
+      const choice=(prompt('Promote to q, r, b, or n?','q')||'q').toLowerCase();
+      promotion=['q','r','b','n'].includes(choice)?choice:'q';
+    }
+    const result=game.move({from:selected,to:square,promotion});
+    if(result){selected=null;legal=[];render();return}
+   }
+  }
+  if(piece&&piece.color===game.turn()){selected=square;refreshLegal()}else{selected=null;legal=[]}
+  render();
+ }
+ function send(cmd){if(engine&&engineReady)engine.postMessage(cmd)}
+ function initEngine(){
+  try{
+   engine=new Worker('https://cdn.jsdelivr.net/npm/stockfish@16.0.0/src/stockfish.js');
+   engine.onmessage=e=>{
+    const msg=String(e.data);
+    if(msg==='uciok'){engine.postMessage('isready')}
+    if(msg==='readyok'){engineReady=true;document.getElementById('engineState').textContent='Ready'}
+    if(msg.startsWith('info ')){
+      const cp=msg.match(/ score cp (-?\\d+)/), mate=msg.match(/ score mate (-?\\d+)/), depth=msg.match(/ depth (\\d+)/);
+      if(cp||mate){let score=mate?'Mate in '+mate[1]:(Number(cp[1])/100).toFixed(2);document.getElementById('analysis').textContent='Evaluation: '+score+(depth?' · depth '+depth[1]:'')}
+    }
+    if(msg.startsWith('bestmove ')){
+      lastBest=msg.split(' ')[1];document.getElementById('analysis').textContent+=' · Best move: '+(lastBest||'—');
+    }
+   };
+   engine.onerror=()=>{document.getElementById('engineState').textContent='Could not load engine'};
+   engine.postMessage('uci');
+  }catch(e){document.getElementById('engineState').textContent='Engine unavailable'}
+ }
+ function analyze(){
+  if(!engineReady){document.getElementById('analysis').textContent='Stockfish is not ready. Check your connection and reload.';return}
+  document.getElementById('analysis').textContent='Analyzing…';
+  send('stop');send('position fen '+game.fen());send('go depth 15');
+ }
+ document.getElementById('analyze').onclick=analyze;
+ document.getElementById('hint').onclick=()=>{
+  if(!engineReady){document.getElementById('analysis').textContent='Stockfish is not ready yet.';return}
+  send('stop');send('position fen '+game.fen());send('go depth 15');
+ };
+ document.getElementById('undo').onclick=()=>{game.undo();selected=null;legal=[];render()};
+ document.getElementById('reset').onclick=()=>{game.reset();selected=null;legal=[];render();document.getElementById('analysis').textContent='New game started.'};
+ document.getElementById('flip').onclick=()=>{flipped=!flipped;render()};
+ document.getElementById('loadFen').onclick=()=>{try{const ok=game.load(document.getElementById('fen').value.trim());if(!ok)throw Error();selected=null;legal=[];render();document.getElementById('analysis').textContent='FEN position loaded.'}catch(e){document.getElementById('analysis').textContent='Invalid FEN. Check the position and try again.'}};
+ document.getElementById('copyFen').onclick=()=>navigator.clipboard?.writeText(game.fen());
+ document.getElementById('copyPgn').onclick=()=>navigator.clipboard?.writeText(game.pgn());
+ render();initEngine();
+})();
+</script>
+</body>
+</html>
